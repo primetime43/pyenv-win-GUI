@@ -1,5 +1,7 @@
 # Author: primetime43
 # GitHub: https://github.com/primetime43
+# Version of the script
+__version__ = '1.0.1'
 
 import tkinter as tk
 from tkinter import ttk
@@ -75,13 +77,18 @@ def clear_output():
 def run_command():
     # Run a pyenv command using PowerShell and display the output
     command = ['powershell', '-Command', f'pyenv {command_var.get()} {params_entry.get()}']
-    result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    output_text.insert(tk.END, result.stdout.decode())
-    output_text.see(tk.END)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+
+    # Read and display the output from the subprocess
+    for line in iter(process.stdout.readline, b''):
+        output_text.insert(tk.END, line.decode())
+        output_text.see(tk.END)
+    process.stdout.close()
+    process.wait()
 
 # Create the main window
 root = tk.Tk()
-root.title("pyenv-win GUI")  # Set the title of the window
+root.title(f"pyenv-win GUI - Version {__version__}")  # Set the title of the window
 
 # Create the Install/Update button with left padding
 install_button = tk.Button(root, text="Install/Update pyenv-win", command=install_update)
