@@ -1,12 +1,35 @@
 # Author: primetime43
 # GitHub: https://github.com/primetime43
-__version__ = '1.2.0'
+__version__ = '1.3.0'
 
 import os
+import re
 import subprocess
 import threading
 import tkinter as tk
 from tkinter import ttk
+
+# pyenv-win colorizes some output with ANSI SGR codes. Tk has no idea what
+# those are and renders them as garbage. Strip them everywhere we surface
+# subprocess output.
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+
+
+def _strip_ansi(text):
+    return _ANSI_RE.sub('', text)
+
+
+def _first_version_line(text):
+    """Return the first line that starts with a digit (a version), or ''.
+
+    pyenv-win can prepend diagnostic lines like 'FATAL: ...' before the
+    actual version, so we can't just take splitlines()[0].
+    """
+    for line in _strip_ansi(text).splitlines():
+        line = line.strip()
+        if line and line[0].isdigit():
+            return line
+    return ''
 
 INSTALL_SCRIPT_URL = (
     'https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/'
@@ -78,14 +101,15 @@ def _append_output(text):
 
 def _stream_to_output(process):
     for line in iter(process.stdout.readline, ''):
-        root.after(0, _append_output, line)
+        root.after(0, _append_output, _strip_ansi(line))
     process.stdout.close()
     return process.wait()
 
 
 def _set_busy(busy):
     state = tk.DISABLED if busy else tk.NORMAL
-    for w in (install_button, uninstall_button, run_button, refresh_button, *quick_buttons):
+    for w in (install_button, uninstall_button, run_button, refresh_button,
+              refresh_status_button, *quick_buttons):
         w.config(state=state)
     status_var.set('Running…' if busy else 'Idle')
 
@@ -100,15 +124,108 @@ def _with_busy(task):
             root.after(0, _append_output, f'Error: {e}\n')
         finally:
             root.after(0, _set_busy, False)
+            # State may have changed (install/uninstall/global/local/shell);
+            # refresh the status panel after every command.
+            root.after(0, _refresh_status)
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+# --- status (active version + scope panel + PATH check) ----------------
+
+def _format_scope_value(output, returncode):
+    """pyenv {global,local,shell} with no args prints the value or an error.
+
+    pyenv-win may prepend warning lines (e.g. FATAL diagnostics), so we walk
+    lines for the first version-shaped one rather than taking splitlines()[0].
+    """
+    if returncode != 0:
+        return '(not set)'
+    line = _first_version_line(output)
+    if not line:
+        return '(not set)'
+    # `pyenv global` etc. typically prints just the version; if extra text
+    # follows (unlikely), keep only the first token.
+    return line.split()[0]
+
+
+def _check_pyenv_path():
+    """Returns (ok: bool, message: str). Looks for pyenv-win\\shims in PATH."""
+    path = os.environ.get('PATH', '')
+    entries = [p.strip().lower() for p in path.split(os.pathsep) if p.strip()]
+    has_bin = any(r'pyenv-win\bin' in p for p in entries)
+    has_shims = any(r'pyenv-win\shims' in p for p in entries)
+    if not has_bin and not has_shims:
+        return False, 'pyenv-win is not on PATH. After installing, open a new terminal so PATH updates take effect.'
+    if not has_shims:
+        return False, r'pyenv-win\shims is missing from PATH — `python` will not resolve to your selected version.'
+    return True, ''
+
+
+def _show_path_warning(msg):
+    path_warning_var.set(f'⚠ {msg}')
+    path_warning_label.grid()
+
+
+def _hide_path_warning():
+    path_warning_var.set('')
+    path_warning_label.grid_remove()
+
+
+def _refresh_status():
+    """Re-query pyenv for active/global/local/shell and refresh PATH warning."""
+
+    def task():
+        # Kick off all four queries in parallel — Popen returns immediately,
+        # the subprocesses run concurrently, communicate() then collects.
+        procs = {
+            'active': _run_powershell('pyenv version', stream=False),
+            'global': _run_powershell('pyenv global', stream=False),
+            'local':  _run_powershell('pyenv local', stream=False),
+            'shell':  _run_powershell('pyenv shell', stream=False),
+        }
+        results = {}
+        for name, p in procs.items():
+            try:
+                out, _ = p.communicate(timeout=10)
+                results[name] = (p.returncode, out)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                results[name] = (-1, '')
+
+        rc_a, out_a = results['active']
+        if rc_a != 0 and not out_a.strip():
+            active = '(pyenv-win not detected)'
+        else:
+            active = _first_version_line(out_a) or '(unknown)'
+        root.after(0, active_var.set, f'Active: {active}')
+
+        rc, out = results['global']
+        root.after(0, global_var.set, f'Global: {_format_scope_value(out, rc)}')
+
+        rc, out = results['local']
+        root.after(0, local_var.set, f'Local: {_format_scope_value(out, rc)}')
+
+        rc, out = results['shell']
+        root.after(0, shell_var.set, f'Shell: {_format_scope_value(out, rc)}')
+
+        ok, msg = _check_pyenv_path()
+        if rc_a != 0:
+            root.after(0, _show_path_warning,
+                       'pyenv-win is not installed or not on PATH. Use "Install / Update pyenv-win" below.')
+        elif not ok:
+            root.after(0, _show_path_warning, msg)
+        else:
+            root.after(0, _hide_path_warning)
+
+    threading.Thread(target=task, daemon=True).start()
 
 
 # --- version querying --------------------------------------------------
 
 def _parse_versions(text):
     out = []
-    for line in text.splitlines():
+    for line in _strip_ansi(text).splitlines():
         line = line.strip()
         if not line or line.startswith(':'):
             continue
@@ -301,13 +418,46 @@ def uninstall():
 
 root = tk.Tk()
 root.title(f'pyenv-win GUI - Version {__version__}')
-root.geometry('720x640')
-root.minsize(560, 480)
+root.geometry('720x720')
+root.minsize(560, 540)
 root.columnconfigure(0, weight=1)
+
+# Status: active version + three-scope panel + PATH warning
+status_frame = ttk.LabelFrame(root, text='Status')
+status_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=(10, 5))
+status_frame.columnconfigure(0, weight=1)
+
+status_top = tk.Frame(status_frame)
+status_top.grid(row=0, column=0, sticky='ew', padx=8, pady=(6, 2))
+status_top.columnconfigure(0, weight=1)
+
+active_var = tk.StringVar(value='Active: (loading…)')
+ttk.Label(status_top, textvariable=active_var,
+          font=('TkDefaultFont', 10, 'bold')).grid(row=0, column=0, sticky='w')
+refresh_status_button = tk.Button(status_top, text='↻ Refresh', command=lambda: _refresh_status())
+refresh_status_button.grid(row=0, column=1, sticky='e')
+
+scopes_frame = tk.Frame(status_frame)
+scopes_frame.grid(row=1, column=0, sticky='ew', padx=8, pady=(0, 4))
+for i in range(3):
+    scopes_frame.columnconfigure(i, weight=1, uniform='scope')
+
+global_var = tk.StringVar(value='Global: …')
+local_var = tk.StringVar(value='Local: …')
+shell_var = tk.StringVar(value='Shell: …')
+ttk.Label(scopes_frame, textvariable=global_var).grid(row=0, column=0, sticky='w')
+ttk.Label(scopes_frame, textvariable=local_var).grid(row=0, column=1, sticky='w')
+ttk.Label(scopes_frame, textvariable=shell_var).grid(row=0, column=2, sticky='w')
+
+path_warning_var = tk.StringVar(value='')
+path_warning_label = ttk.Label(status_frame, textvariable=path_warning_var,
+                               foreground='#c0392b', wraplength=620, justify='left')
+path_warning_label.grid(row=2, column=0, sticky='w', padx=8, pady=(0, 6))
+path_warning_label.grid_remove()
 
 # pyenv-win itself
 pyenv_frame = ttk.LabelFrame(root, text='pyenv-win')
-pyenv_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=(10, 5))
+pyenv_frame.grid(row=1, column=0, sticky='ew', padx=10, pady=5)
 
 install_button = tk.Button(pyenv_frame, text='Install / Update pyenv-win', command=install_update)
 install_button.pack(side=tk.LEFT, padx=6, pady=6)
@@ -316,7 +466,7 @@ uninstall_button.pack(side=tk.LEFT, padx=(0, 6), pady=6)
 
 # Quick actions
 quick_frame = ttk.LabelFrame(root, text='Quick actions')
-quick_frame.grid(row=1, column=0, sticky='ew', padx=10, pady=5)
+quick_frame.grid(row=2, column=0, sticky='ew', padx=10, pady=5)
 
 quick_buttons = []
 for text, key in QUICK_ACTIONS:
@@ -326,7 +476,7 @@ for text, key in QUICK_ACTIONS:
 
 # Command runner
 runner_frame = ttk.LabelFrame(root, text='Run a pyenv command')
-runner_frame.grid(row=2, column=0, sticky='ew', padx=10, pady=5)
+runner_frame.grid(row=3, column=0, sticky='ew', padx=10, pady=5)
 runner_frame.columnconfigure(1, weight=1)
 
 ttk.Label(runner_frame, text='Command:').grid(row=0, column=0, sticky='w', padx=(8, 4), pady=(8, 2))
@@ -359,10 +509,10 @@ run_button.grid(row=3, column=0, columnspan=3, pady=(0, 8))
 
 # Output
 output_frame = ttk.LabelFrame(root, text='Output')
-output_frame.grid(row=3, column=0, sticky='nsew', padx=10, pady=5)
+output_frame.grid(row=4, column=0, sticky='nsew', padx=10, pady=5)
 output_frame.rowconfigure(0, weight=1)
 output_frame.columnconfigure(0, weight=1)
-root.rowconfigure(3, weight=1)
+root.rowconfigure(4, weight=1)
 
 output_text = tk.Text(output_frame, wrap='word', height=12)
 output_text.grid(row=0, column=0, sticky='nsew', padx=(6, 0), pady=6)
@@ -372,7 +522,7 @@ output_text['yscrollcommand'] = scrollbar.set
 
 # Footer
 footer = tk.Frame(root)
-footer.grid(row=4, column=0, sticky='ew', padx=10, pady=(5, 10))
+footer.grid(row=5, column=0, sticky='ew', padx=10, pady=(5, 10))
 footer.columnconfigure(0, weight=1)
 
 status_var = tk.StringVar(value='Idle')
@@ -382,5 +532,7 @@ tk.Button(footer, text='Clear output', command=clear_output).grid(row=0, column=
 _on_command_changed()
 # Prefetch installed versions so the dropdown is ready when the user opens it.
 _query_versions('installed', lambda v: _apply_versions_to_arg('installed', v), silent=True)
+# Populate the status panel.
+_refresh_status()
 
 root.mainloop()
