@@ -1,11 +1,11 @@
-# Builds the .exe and creates a GitHub Release whenever a v* tag is pushed.
-# Trigger it locally with: git tag v2.1.0 && git push origin v2.1.0
+# Builds the .exe and creates a GitHub Release whenever a numeric tag is pushed.
+# Trigger it locally with: git tag 2.1.0 && git push origin 2.1.0
 name: Build and release
 
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]*'
 
 permissions:
   contents: write  # required to create the Release
