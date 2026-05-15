@@ -2,10 +2,6 @@
 
 A friendly Tkinter GUI for [pyenv-win](https://github.com/pyenv-win/pyenv-win) — install, switch, and manage Python versions on Windows without memorizing pyenv commands.
 
-## Background
-
-[pyenv-win](https://github.com/pyenv-win/pyenv-win) is the Windows port of [pyenv](https://github.com/pyenv/pyenv) — it lets you install and switch between multiple Python versions on the same machine. It's powerful but command-line only: every operation means remembering `pyenv install 3.12.7`, `pyenv global 3.11.5`, `pyenv local 3.10.11`, `pyenv versions`, and so on. This project puts a GUI on top: install a new Python version, switch the active one, create venvs, manage pip packages per version, and see at a glance what's active and where it was set — all without typing pyenv commands.
-
 ## Features
 
 - **Install / update / uninstall pyenv-win itself.** Uses the vendored official installer script — no network roundtrip on launch.
