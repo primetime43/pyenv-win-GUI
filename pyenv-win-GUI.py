@@ -31,6 +31,50 @@ def _first_version_line(text):
             return line
     return ''
 
+
+# Strict final-release pattern: X.Y.Z all numeric, no pre-release suffix.
+_FINAL_VER_RE = re.compile(r'^\d+\.\d+\.\d+$')
+
+
+def _extract_series(versions):
+    """Unique major.minor series, sorted newest-first (e.g. ['3.13', '3.12', ...])."""
+    series = set()
+    for v in versions:
+        parts = v.split('.')
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            series.add(f'{parts[0]}.{parts[1]}')
+    return sorted(series,
+                  key=lambda s: tuple(int(x) for x in s.split('.')),
+                  reverse=True)
+
+
+def _latest_in_series(versions, series):
+    """Highest final-release patch in a major.minor series, or None.
+
+    Pre-releases (3.13.0a1, 3.13.0rc1, …) are excluded — "latest" means
+    "newest stable" for the one-click install buttons.
+    """
+    prefix = series + '.'
+    matching = []
+    for v in versions:
+        if v.startswith(prefix) and _FINAL_VER_RE.match(v):
+            matching.append((tuple(int(p) for p in v.split('.')), v))
+    matching.sort()
+    return matching[-1][1] if matching else None
+
+
+def _sort_versions_desc(versions):
+    """Newest-first. Finals (3.12.0) beat their pre-releases (3.12.0rc1) at equal parts."""
+    def key(v):
+        if _FINAL_VER_RE.match(v):
+            return (tuple(int(p) for p in v.split('.')), 1, '')
+        nums = re.findall(r'\d+', v)
+        parts = tuple(int(n) for n in nums[:3])
+        while len(parts) < 3:
+            parts = parts + (0,)
+        return (parts, 0, v)
+    return sorted(versions, key=key, reverse=True)
+
 INSTALL_SCRIPT_URL = (
     'https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/'
     'pyenv-win/install-pyenv-win.ps1'
@@ -321,7 +365,7 @@ def _parse_versions(text):
         first = line.split()[0] if line else ''
         if first and first[0].isdigit():
             out.append(first)
-    return out
+    return _sort_versions_desc(out)
 
 
 def _query_versions(kind, on_done, silent=False):
