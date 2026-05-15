@@ -265,6 +265,73 @@ Write-Output 'System Properties > Environment Variables.'
 '''
 
 
+def _format_size(n):
+    if n < 1024:
+        return f'{n} B'
+    if n < 1024 ** 2:
+        return f'{n / 1024:.1f} KB'
+    if n < 1024 ** 3:
+        return f'{n / 1024 ** 2:.1f} MB'
+    return f'{n / 1024 ** 3:.2f} GB'
+
+
+def _dir_size(path):
+    """Walk a directory tree and sum file sizes. Ignores I/O errors."""
+    total = 0
+    try:
+        for dirpath, _, filenames in os.walk(path):
+            for f in filenames:
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, f))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _get_pyenv_root():
+    """Locate the pyenv-win install dir (the one containing 'versions/').
+
+    Order: $env:PYENV (process env) → persistent USER env → default fallback.
+    Returns None if no valid directory is found.
+    """
+    candidates = []
+    p = os.environ.get('PYENV')
+    if p:
+        candidates.append(p)
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             "[Environment]::GetEnvironmentVariable('PYENV','User')"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            encoding='utf-8', errors='replace', timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            candidates.append(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    candidates.append(os.path.expandvars(r'%USERPROFILE%\.pyenv\pyenv-win'))
+    for c in candidates:
+        c = c.rstrip('\\/')
+        if c and os.path.isdir(c):
+            return c
+    return None
+
+
+def _current_active_version():
+    """Extract just the version string from the active_var banner text."""
+    text = active_var.get()
+    if not text.startswith('Active: '):
+        return None
+    rest = text[len('Active: '):].strip()
+    if not rest:
+        return None
+    first = rest.split()[0]
+    return first if first and first[0].isdigit() else None
+
+
 def _fix_path():
     if not messagebox.askyesno(
         'Fix pyenv-win PATH',
@@ -291,6 +358,185 @@ def _fix_path():
                 os.environ['PATH'] = new_path
 
     _with_busy(task)
+
+
+def _open_manage_dialog():
+    """Show a Treeview of installed Python versions with right-click actions."""
+    pyenv_root = _get_pyenv_root()
+    versions_dir = os.path.join(pyenv_root, 'versions') if pyenv_root else None
+    if not versions_dir or not os.path.isdir(versions_dir):
+        messagebox.showerror(
+            'pyenv-win not found',
+            'Could not find the pyenv versions directory.\n'
+            'Install pyenv-win first using "Install / Update pyenv-win".'
+        )
+        return
+
+    dialog = tk.Toplevel(root)
+    dialog.title('Manage installed Python versions')
+    dialog.geometry('820x460')
+    dialog.minsize(640, 320)
+    dialog.transient(root)
+    dialog.columnconfigure(0, weight=1)
+    dialog.rowconfigure(0, weight=1)
+
+    tree_frame = tk.Frame(dialog)
+    tree_frame.grid(row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
+    tree_frame.rowconfigure(0, weight=1)
+    tree_frame.columnconfigure(0, weight=1)
+
+    columns = ('active', 'version', 'exe', 'size')
+    tree = ttk.Treeview(tree_frame, columns=columns, show='headings', selectmode='browse')
+    tree.heading('active', text='Active')
+    tree.heading('version', text='Version')
+    tree.heading('exe', text='Executable')
+    tree.heading('size', text='Size')
+    tree.column('active', width=60, anchor='center', stretch=False)
+    tree.column('version', width=110, anchor='w', stretch=False)
+    tree.column('exe', width=440, anchor='w')
+    tree.column('size', width=90, anchor='e', stretch=False)
+    tree.grid(row=0, column=0, sticky='nsew')
+
+    tree.tag_configure('active', background='#fff9e6',
+                       font=('TkDefaultFont', 9, 'bold'))
+
+    scroll = tk.Scrollbar(tree_frame, command=tree.yview)
+    scroll.grid(row=0, column=1, sticky='ns')
+    tree['yscrollcommand'] = scroll.set
+
+    info_frame = tk.Frame(dialog)
+    info_frame.grid(row=1, column=0, sticky='ew', padx=10, pady=(0, 2))
+    info_frame.columnconfigure(0, weight=1)
+    total_var = tk.StringVar(value='Total: calculating…')
+    status_msg_var = tk.StringVar(value='')
+    ttk.Label(info_frame, textvariable=total_var).grid(row=0, column=0, sticky='w')
+    ttk.Label(info_frame, textvariable=status_msg_var,
+              foreground='#888').grid(row=0, column=1, sticky='e')
+
+    button_frame = tk.Frame(dialog)
+    button_frame.grid(row=2, column=0, sticky='ew', padx=10, pady=10)
+    button_frame.columnconfigure(0, weight=1)
+    ttk.Label(button_frame, text='Right-click a row for actions.',
+              foreground='#666').grid(row=0, column=0, sticky='w')
+
+    def _selected_version():
+        sel = tree.selection()
+        return tree.set(sel[0], 'version') if sel else None
+
+    def _flash_status(msg):
+        status_msg_var.set(msg)
+        dialog.after(2500, lambda: status_msg_var.set(''))
+
+    def open_folder():
+        v = _selected_version()
+        if not v:
+            return
+        path = os.path.join(versions_dir, v)
+        try:
+            os.startfile(path)  # Windows-only; same caveat as CREATE_NO_WINDOW
+            _flash_status(f'Opened {path}')
+        except OSError as e:
+            messagebox.showerror('Open folder', str(e))
+
+    def copy_path():
+        v = _selected_version()
+        if not v:
+            return
+        path = os.path.join(versions_dir, v, 'python.exe')
+        dialog.clipboard_clear()
+        dialog.clipboard_append(path)
+        _flash_status('Path copied to clipboard')
+
+    def set_global():
+        v = _selected_version()
+        if not v:
+            return
+        dialog.destroy()
+        _run_pyenv_subcommand('global', v)
+
+    def uninstall_version():
+        v = _selected_version()
+        if not v:
+            return
+        if not messagebox.askyesno(
+            'Uninstall Python',
+            f'Uninstall Python {v}?\n\n'
+            f'This will delete:\n  {os.path.join(versions_dir, v)}\n\n'
+            f'This cannot be undone.'
+        ):
+            return
+        dialog.destroy()
+        _run_pyenv_subcommand('uninstall', v)
+
+    context_menu = tk.Menu(dialog, tearoff=0)
+    context_menu.add_command(label='Set as Global', command=set_global)
+    context_menu.add_command(label='Uninstall…', command=uninstall_version)
+    context_menu.add_separator()
+    context_menu.add_command(label='Open Folder', command=open_folder)
+    context_menu.add_command(label='Copy Path', command=copy_path)
+
+    def show_context_menu(event):
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        tree.selection_set(iid)
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            context_menu.grab_release()
+
+    tree.bind('<Button-3>', show_context_menu)
+
+    def load():
+        tree.delete(*tree.get_children())
+        total_var.set('Total: calculating…')
+        try:
+            versions = sorted(
+                [d for d in os.listdir(versions_dir)
+                 if os.path.isdir(os.path.join(versions_dir, d))],
+                key=lambda v: tuple(int(p) if p.isdigit() else 0
+                                    for p in v.split('.')),
+                reverse=True,
+            )
+        except OSError as e:
+            messagebox.showerror('Read versions', str(e))
+            return
+
+        if not versions:
+            total_var.set('No Python versions installed.')
+            return
+
+        active_now = _current_active_version()
+        item_ids = {}
+        for v in versions:
+            exe = os.path.join(versions_dir, v, 'python.exe')
+            is_active = (v == active_now)
+            tags = ('active',) if is_active else ()
+            iid = tree.insert(
+                '', tk.END,
+                values=('★' if is_active else '', v, exe, '…'),
+                tags=tags,
+            )
+            item_ids[v] = iid
+
+        # Compute disk sizes on a background thread; dialog stays responsive.
+        def compute_sizes():
+            total = 0
+            for v in versions:
+                size = _dir_size(os.path.join(versions_dir, v))
+                total += size
+                root.after(0,
+                           lambda i=item_ids[v], s=_format_size(size):
+                           tree.set(i, 'size', s))
+            root.after(0,
+                       lambda t=total: total_var.set(f'Total: {_format_size(t)}'))
+
+        threading.Thread(target=compute_sizes, daemon=True).start()
+
+    tk.Button(button_frame, text='Refresh', command=load).grid(row=0, column=1, padx=(0, 4))
+    tk.Button(button_frame, text='Close', command=dialog.destroy).grid(row=0, column=2)
+
+    load()
 
 
 def _show_path_warning(msg):
@@ -611,6 +857,10 @@ for text, key in QUICK_ACTIONS:
     btn = tk.Button(quick_frame, text=text, command=lambda k=key: quick_action(k))
     btn.pack(side=tk.LEFT, padx=6, pady=6)
     quick_buttons.append(btn)
+
+manage_button = tk.Button(quick_frame, text='Manage installed…', command=_open_manage_dialog)
+manage_button.pack(side=tk.LEFT, padx=6, pady=6)
+quick_buttons.append(manage_button)
 
 # Command runner
 runner_frame = ttk.LabelFrame(root, text='Run a pyenv command')
