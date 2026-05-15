@@ -2,11 +2,13 @@
 # GitHub: https://github.com/primetime43
 __version__ = '2.0.0'
 
+import json
 import os
 import re
 import subprocess
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 # pyenv-win colorizes some output with ANSI SGR codes. Tk has no idea what
@@ -61,6 +63,36 @@ def _latest_in_series(versions, series):
             matching.append((tuple(int(p) for p in v.split('.')), v))
     matching.sort()
     return matching[-1][1] if matching else None
+
+
+# pyenv-win marks output phases with bracketed tags like "::  [Downloading] ::".
+# We extract those for the progress label.
+_PHASE_RE = re.compile(r'::\s*\[([^]]+)\]')
+_PCT_RE = re.compile(r'(\d{1,3})\s*%')
+
+
+def _detect_progress(line):
+    """Update the progress widgets based on a line of pyenv output. Thread-safe."""
+    m = _PHASE_RE.search(line)
+    if m:
+        phase = m.group(1).strip()
+        # [Info] is the high-frequency "doing housekeeping" tag; ignore it
+        # so the label doesn't flicker. Keep the rest verbatim.
+        if phase.lower() != 'info':
+            root.after(0, progress_phase_var.set, phase + '…')
+    m = _PCT_RE.search(line)
+    if m:
+        pct = int(m.group(1))
+        if 0 <= pct <= 100:
+            root.after(0, _set_progress_determinate, pct)
+
+
+def _set_progress_determinate(pct):
+    """Switch the progress bar to determinate mode and set value."""
+    if str(progress_bar['mode']) != 'determinate':
+        progress_bar.stop()
+        progress_bar.config(mode='determinate', maximum=100)
+    progress_bar['value'] = pct
 
 
 def _sort_versions_desc(versions):
@@ -145,7 +177,9 @@ def _append_output(text):
 
 def _stream_to_output(process):
     for line in iter(process.stdout.readline, ''):
-        root.after(0, _append_output, _strip_ansi(line))
+        clean = _strip_ansi(line)
+        root.after(0, _append_output, clean)
+        _detect_progress(clean)
     process.stdout.close()
     return process.wait()
 
@@ -153,9 +187,18 @@ def _stream_to_output(process):
 def _set_busy(busy):
     state = tk.DISABLED if busy else tk.NORMAL
     for w in (install_button, uninstall_button, run_button, refresh_button,
-              refresh_status_button, fix_path_button, *quick_buttons):
+              refresh_status_button, fix_path_button, open_root_button,
+              *quick_buttons):
         w.config(state=state)
     status_var.set('Running…' if busy else 'Idle')
+    if busy:
+        progress_phase_var.set('')
+        progress_frame.grid()
+        progress_bar.config(mode='indeterminate', value=0)
+        progress_bar.start(15)
+    else:
+        progress_bar.stop()
+        progress_frame.grid_remove()
 
 
 def _with_busy(task):
@@ -318,6 +361,56 @@ def _get_pyenv_root():
         if c and os.path.isdir(c):
             return c
     return None
+
+
+def _open_pyenv_root():
+    """Open <pyenv-root> in Windows Explorer."""
+    p = _get_pyenv_root()
+    if not p:
+        messagebox.showerror(
+            'Open pyenv root',
+            'Could not find the pyenv-win installation directory.'
+        )
+        return
+    try:
+        os.startfile(p)
+    except OSError as e:
+        messagebox.showerror('Open pyenv root', str(e))
+
+
+# Settings sidecar — persists window geometry + last command across launches.
+_SETTINGS_PATH = (
+    Path(os.environ.get('APPDATA') or os.path.expanduser('~'))
+    / 'pyenv-win-GUI' / 'settings.json'
+)
+
+
+def _load_settings():
+    try:
+        with _SETTINGS_PATH.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_settings():
+    """Best-effort save; never raises out of the close handler."""
+    try:
+        _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            'geometry': root.geometry(),
+            'last_command': command_var.get(),
+        }
+        with _SETTINGS_PATH.open('w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except OSError:
+        pass
+
+
+def _on_close():
+    _save_settings()
+    root.destroy()
 
 
 def _current_active_version():
@@ -847,6 +940,8 @@ install_button = tk.Button(pyenv_frame, text='Install / Update pyenv-win', comma
 install_button.pack(side=tk.LEFT, padx=6, pady=6)
 uninstall_button = tk.Button(pyenv_frame, text='Uninstall pyenv-win', command=uninstall)
 uninstall_button.pack(side=tk.LEFT, padx=(0, 6), pady=6)
+open_root_button = tk.Button(pyenv_frame, text='Open pyenv root', command=_open_pyenv_root)
+open_root_button.pack(side=tk.LEFT, padx=(0, 6), pady=6)
 
 # Quick actions
 quick_frame = ttk.LabelFrame(root, text='Quick actions')
@@ -908,14 +1003,42 @@ scrollbar = tk.Scrollbar(output_frame, command=output_text.yview)
 scrollbar.grid(row=0, column=1, sticky='ns', padx=(0, 6), pady=6)
 output_text['yscrollcommand'] = scrollbar.set
 
+# Progress (hidden until an operation runs)
+progress_frame = tk.Frame(root)
+progress_frame.grid(row=5, column=0, sticky='ew', padx=10, pady=(2, 0))
+progress_frame.columnconfigure(0, weight=1)
+progress_frame.grid_remove()
+
+progress_bar = ttk.Progressbar(progress_frame, mode='indeterminate')
+progress_bar.grid(row=0, column=0, sticky='ew')
+
+progress_phase_var = tk.StringVar(value='')
+ttk.Label(progress_frame, textvariable=progress_phase_var,
+          foreground='#555').grid(row=0, column=1, sticky='w', padx=(8, 0))
+
 # Footer
 footer = tk.Frame(root)
-footer.grid(row=5, column=0, sticky='ew', padx=10, pady=(5, 10))
+footer.grid(row=6, column=0, sticky='ew', padx=10, pady=(5, 10))
 footer.columnconfigure(0, weight=1)
 
 status_var = tk.StringVar(value='Idle')
 ttk.Label(footer, textvariable=status_var, anchor='w').grid(row=0, column=0, sticky='w')
 tk.Button(footer, text='Clear output', command=clear_output).grid(row=0, column=1, sticky='e')
+
+# Load and apply persisted settings.
+_settings = _load_settings()
+geom = _settings.get('geometry')
+if isinstance(geom, str):
+    try:
+        root.geometry(geom)
+    except tk.TclError:
+        pass
+last_cmd = _settings.get('last_command')
+if isinstance(last_cmd, str) and last_cmd in command_labels:
+    command_var.set(last_cmd)
+
+# Save settings on close.
+root.protocol('WM_DELETE_WINDOW', _on_close)
 
 _on_command_changed()
 # Prefetch installed versions so the dropdown is ready when the user opens it.
