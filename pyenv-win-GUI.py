@@ -1,13 +1,13 @@
 # Author: primetime43
 # GitHub: https://github.com/primetime43
-__version__ = '1.3.0'
+__version__ = '1.4.0'
 
 import os
 import re
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 # pyenv-win colorizes some output with ANSI SGR codes. Tk has no idea what
 # those are and renders them as garbage. Strip them everywhere we surface
@@ -109,7 +109,7 @@ def _stream_to_output(process):
 def _set_busy(busy):
     state = tk.DISABLED if busy else tk.NORMAL
     for w in (install_button, uninstall_button, run_button, refresh_button,
-              refresh_status_button, *quick_buttons):
+              refresh_status_button, fix_path_button, *quick_buttons):
         w.config(state=state)
     status_var.set('Running…' if busy else 'Idle')
 
@@ -149,10 +149,34 @@ def _format_scope_value(output, returncode):
     return line.split()[0]
 
 
+def _persistent_path():
+    """Read the user's effective persistent PATH (Machine + User) from the registry.
+
+    We can't trust ``os.environ['PATH']`` because it was captured at GUI launch
+    and won't reflect changes made by Fix PATH (or the official installer)
+    during this session.
+    """
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             "$m=[Environment]::GetEnvironmentVariable('PATH','Machine');"
+             "$u=[Environment]::GetEnvironmentVariable('PATH','User');"
+             "Write-Output \"$m;$u\""],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            encoding='utf-8', errors='replace', timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return os.environ.get('PATH', '')
+
+
 def _check_pyenv_path():
     """Returns (ok: bool, message: str). Looks for pyenv-win\\shims in PATH."""
-    path = os.environ.get('PATH', '')
-    entries = [p.strip().lower() for p in path.split(os.pathsep) if p.strip()]
+    path = _persistent_path()
+    entries = [p.strip().lower() for p in path.split(';') if p.strip()]
     has_bin = any(r'pyenv-win\bin' in p for p in entries)
     has_shims = any(r'pyenv-win\shims' in p for p in entries)
     if not has_bin and not has_shims:
@@ -162,14 +186,77 @@ def _check_pyenv_path():
     return True, ''
 
 
+# PowerShell payload for the Fix PATH button. Prepends bin+shims to USER PATH
+# (user scope = no admin required). Deduplicates if either is already present.
+_FIX_PATH_PS = r'''
+$pyenv = $env:PYENV
+if (-not $pyenv) { $pyenv = Join-Path $env:USERPROFILE '.pyenv\pyenv-win\' }
+$pyenv = $pyenv.TrimEnd('\','/')
+$bin   = Join-Path $pyenv 'bin'
+$shims = Join-Path $pyenv 'shims'
+
+if (-not (Test-Path $shims)) {
+    Write-Output ('ERROR: Shims directory not found at ' + $shims)
+    Write-Output 'Click "Install / Update pyenv-win" first.'
+    exit 1
+}
+
+$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+if (-not $userPath) { $userPath = '' }
+$entries = @($userPath -split ';' | Where-Object { $_ })
+$filtered = $entries | Where-Object {
+    $t = $_.TrimEnd('\','/')
+    $t -ne $bin -and $t -ne $shims
+}
+$newPath = (@($bin, $shims) + $filtered) -join ';'
+[Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+
+Write-Output 'USER PATH updated. Entries now at the front:'
+Write-Output ('  ' + $bin)
+Write-Output ('  ' + $shims)
+Write-Output ''
+Write-Output 'Already-open terminals will not see the change until restarted.'
+Write-Output 'If a conflicting python.exe is in SYSTEM PATH, remove it via'
+Write-Output 'System Properties > Environment Variables.'
+'''
+
+
+def _fix_path():
+    if not messagebox.askyesno(
+        'Fix pyenv-win PATH',
+        'This will prepend pyenv-win\\bin and pyenv-win\\shims to your USER PATH '
+        'so that `python` and the other shims resolve to your pyenv-managed version.\n\n'
+        'Caveats:\n'
+        '  • Already-open terminals won\'t see the change until they restart.\n'
+        '  • If a conflicting Python is in SYSTEM PATH, you\'ll need to remove '
+        'it manually via System Properties > Environment Variables.\n\n'
+        'Continue?'
+    ):
+        return
+
+    def task():
+        root.after(0, _append_output, '> Fix pyenv-win PATH (USER scope)\n')
+        proc = _run_powershell(_FIX_PATH_PS)
+        rc = _stream_to_output(proc)
+        # Update this process's own PATH so any subsequent pyenv calls from
+        # this GUI session see the new shims. The persistent change is what
+        # matters for new terminals; this matters for the current GUI.
+        if rc == 0:
+            new_path = _persistent_path()
+            if new_path:
+                os.environ['PATH'] = new_path
+
+    _with_busy(task)
+
+
 def _show_path_warning(msg):
     path_warning_var.set(f'⚠ {msg}')
-    path_warning_label.grid()
+    path_row.grid()
 
 
 def _hide_path_warning():
     path_warning_var.set('')
-    path_warning_label.grid_remove()
+    path_row.grid_remove()
 
 
 def _refresh_status():
@@ -449,11 +536,18 @@ ttk.Label(scopes_frame, textvariable=global_var).grid(row=0, column=0, sticky='w
 ttk.Label(scopes_frame, textvariable=local_var).grid(row=0, column=1, sticky='w')
 ttk.Label(scopes_frame, textvariable=shell_var).grid(row=0, column=2, sticky='w')
 
+path_row = tk.Frame(status_frame)
+path_row.grid(row=2, column=0, sticky='ew', padx=8, pady=(0, 6))
+path_row.columnconfigure(0, weight=1)
+path_row.grid_remove()
+
 path_warning_var = tk.StringVar(value='')
-path_warning_label = ttk.Label(status_frame, textvariable=path_warning_var,
-                               foreground='#c0392b', wraplength=620, justify='left')
-path_warning_label.grid(row=2, column=0, sticky='w', padx=8, pady=(0, 6))
-path_warning_label.grid_remove()
+path_warning_label = ttk.Label(path_row, textvariable=path_warning_var,
+                               foreground='#c0392b', wraplength=540, justify='left')
+path_warning_label.grid(row=0, column=0, sticky='w')
+
+fix_path_button = tk.Button(path_row, text='Fix PATH', command=_fix_path)
+fix_path_button.grid(row=0, column=1, sticky='e', padx=(8, 0))
 
 # pyenv-win itself
 pyenv_frame = ttk.LabelFrame(root, text='pyenv-win')
