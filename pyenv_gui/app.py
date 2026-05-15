@@ -44,7 +44,18 @@ class App:
             lambda v: self._apply_versions_to_arg('installed', v),
             silent=True,
         )
+        # Prefetch installable so the "Install Python 3.X" buttons populate
+        # shortly after launch.
+        self.query_versions(
+            'installable',
+            self._on_installable_loaded,
+            silent=True,
+        )
         self.refresh_status()
+
+    def _on_installable_loaded(self, versions):
+        self._apply_versions_to_arg('installable', versions)
+        self._rebuild_install_latest_buttons()
 
     def run(self):
         self.root.mainloop()
@@ -132,9 +143,28 @@ class App:
         manage_button.pack(side=tk.LEFT, padx=6, pady=6)
         self.quick_buttons.append(manage_button)
 
+        # Install Python (latest stable per series + Browse dialog)
+        self.install_python_frame = ttk.LabelFrame(self.root, text='Install Python')
+        self.install_python_frame.grid(row=3, column=0, sticky='ew', padx=10, pady=5)
+
+        # Browse first so it pins to the right; dynamic per-series buttons pack
+        # in between with side=LEFT.
+        self.browse_button = tk.Button(
+            self.install_python_frame, text='Browse all…',
+            command=lambda: dialogs.open_browse_dialog(self),
+        )
+        self.browse_button.pack(side=tk.RIGHT, padx=6, pady=6)
+
+        self.install_latest_label = ttk.Label(
+            self.install_python_frame, text='Loading installable versions…',
+            foreground='#888',
+        )
+        self.install_latest_label.pack(side=tk.LEFT, padx=(8, 4), pady=6)
+        self.install_latest_buttons = []  # rebuilt by _rebuild_install_latest_buttons
+
         # Command runner
         runner_frame = ttk.LabelFrame(self.root, text='Run a pyenv command')
-        runner_frame.grid(row=3, column=0, sticky='ew', padx=10, pady=5)
+        runner_frame.grid(row=4, column=0, sticky='ew', padx=10, pady=5)
         runner_frame.columnconfigure(1, weight=1)
 
         ttk.Label(runner_frame, text='Command:').grid(
@@ -172,10 +202,10 @@ class App:
 
         # Output
         output_frame = ttk.LabelFrame(self.root, text='Output')
-        output_frame.grid(row=4, column=0, sticky='nsew', padx=10, pady=5)
+        output_frame.grid(row=5, column=0, sticky='nsew', padx=10, pady=5)
         output_frame.rowconfigure(0, weight=1)
         output_frame.columnconfigure(0, weight=1)
-        self.root.rowconfigure(4, weight=1)
+        self.root.rowconfigure(5, weight=1)
 
         self.output_text = tk.Text(output_frame, wrap='word', height=12)
         self.output_text.grid(row=0, column=0, sticky='nsew', padx=(6, 0), pady=6)
@@ -185,7 +215,7 @@ class App:
 
         # Progress (hidden when idle)
         self.progress_frame = tk.Frame(self.root)
-        self.progress_frame.grid(row=5, column=0, sticky='ew', padx=10, pady=(2, 0))
+        self.progress_frame.grid(row=6, column=0, sticky='ew', padx=10, pady=(2, 0))
         self.progress_frame.columnconfigure(0, weight=1)
         self.progress_frame.grid_remove()
 
@@ -198,7 +228,7 @@ class App:
 
         # Footer
         footer = tk.Frame(self.root)
-        footer.grid(row=6, column=0, sticky='ew', padx=10, pady=(5, 10))
+        footer.grid(row=7, column=0, sticky='ew', padx=10, pady=(5, 10))
         footer.columnconfigure(0, weight=1)
 
         self.status_var = tk.StringVar(value='Idle')
@@ -265,7 +295,8 @@ class App:
         state = tk.DISABLED if busy else tk.NORMAL
         for w in (self.install_button, self.uninstall_button, self.run_button,
                   self.refresh_button, self.refresh_status_button,
-                  self.fix_path_button, self.open_root_button, *self.quick_buttons):
+                  self.fix_path_button, self.open_root_button, self.browse_button,
+                  *self.quick_buttons, *self.install_latest_buttons):
             w.config(state=state)
         self.status_var.set('Running…' if busy else 'Idle')
         if busy:
@@ -306,6 +337,50 @@ class App:
             if on_complete:
                 self.root.after(0, on_complete)
         self._with_busy(task)
+
+    def _rebuild_install_latest_buttons(self):
+        """Rebuild the per-series 'Python X.Y (X.Y.Z)' buttons from the cache."""
+        for btn in self.install_latest_buttons:
+            btn.destroy()
+        self.install_latest_buttons.clear()
+
+        installable = self.versions_cache.get('installable')
+        if installable is None:
+            self.install_latest_label.config(text='Loading installable versions…')
+            return
+        if not installable:
+            self.install_latest_label.config(
+                text='(no installable versions — is pyenv-win installed?)',
+            )
+            return
+
+        self.install_latest_label.config(text='Latest stable:')
+        for s in pyenv_mod.extract_series(installable)[:4]:
+            latest = pyenv_mod.latest_in_series(installable, s)
+            if not latest:
+                continue
+            btn = tk.Button(
+                self.install_python_frame,
+                text=f'Python {s} ({latest})',
+                command=lambda v=latest: self._install_latest_confirmed(v),
+            )
+            # New side=LEFT packs go to the right of existing LEFT widgets
+            # (the label), and side=RIGHT widgets (Browse) keep their slot at
+            # the right edge. Final order: label | series buttons | … | Browse.
+            btn.pack(side=tk.LEFT, padx=2, pady=6)
+            if self.is_busy:
+                btn.config(state=tk.DISABLED)
+            self.install_latest_buttons.append(btn)
+
+    def _install_latest_confirmed(self, version):
+        if not messagebox.askyesno(
+            'Install Python',
+            f'Install Python {version}?\n\n'
+            f'This downloads and installs from the official mirror and may take '
+            f'a few minutes.',
+        ):
+            return
+        self.run_pyenv_subcommand('install', version)
 
     def run_pyenv_subcommand(self, key, args=''):
         cmdline = f'pyenv {key} {args}'.strip()

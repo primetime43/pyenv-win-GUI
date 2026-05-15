@@ -222,6 +222,176 @@ def open_pip_dialog(app, version, exe):
     load_packages()
 
 
+def open_browse_dialog(app):
+    """Browse the full installable-versions list with filter + search."""
+    dialog = tk.Toplevel(app.root)
+    dialog.title('Browse installable Python versions')
+    dialog.geometry('720x540')
+    dialog.minsize(540, 360)
+    dialog.transient(app.root)
+    dialog.columnconfigure(0, weight=1)
+    dialog.rowconfigure(2, weight=1)
+
+    # Filters
+    filter_frame = ttk.LabelFrame(dialog, text='Filters')
+    filter_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=(10, 5))
+    filter_frame.columnconfigure(3, weight=1)
+
+    ttk.Label(filter_frame, text='Major:').grid(row=0, column=0, sticky='w', padx=(8, 4), pady=6)
+    major_var = tk.StringVar(value='All')
+    major_combo = ttk.Combobox(filter_frame, textvariable=major_var,
+                               values=['All'], state='readonly', width=10)
+    major_combo.grid(row=0, column=1, sticky='w', padx=(0, 12), pady=6)
+
+    ttk.Label(filter_frame, text='Search:').grid(row=0, column=2, sticky='w', padx=(0, 4), pady=6)
+    search_var = tk.StringVar()
+    search_entry = ttk.Entry(filter_frame, textvariable=search_var)
+    search_entry.grid(row=0, column=3, sticky='ew', padx=(0, 8), pady=6)
+
+    status_var = tk.StringVar(value='Loading installable versions…')
+    ttk.Label(dialog, textvariable=status_var,
+              foreground='#555').grid(row=1, column=0, sticky='w', padx=10)
+
+    # Treeview
+    tree_frame = tk.Frame(dialog)
+    tree_frame.grid(row=2, column=0, sticky='nsew', padx=10, pady=4)
+    tree_frame.rowconfigure(0, weight=1)
+    tree_frame.columnconfigure(0, weight=1)
+
+    tree = ttk.Treeview(tree_frame, columns=('version', 'status'),
+                        show='headings', selectmode='browse')
+    tree.heading('version', text='Version')
+    tree.heading('status', text='Status')
+    tree.column('version', width=160, anchor='w', stretch=False)
+    tree.column('status', width=240, anchor='w')
+    tree.grid(row=0, column=0, sticky='nsew')
+
+    tree.tag_configure('installed', background='#e8f5e9', foreground='#1b5e20')
+    tree.tag_configure('latest', font=('TkDefaultFont', 9, 'bold'))
+
+    scroll = tk.Scrollbar(tree_frame, command=tree.yview)
+    scroll.grid(row=0, column=1, sticky='ns')
+    tree['yscrollcommand'] = scroll.set
+
+    # Buttons
+    btn_frame = tk.Frame(dialog)
+    btn_frame.grid(row=3, column=0, sticky='ew', padx=10, pady=10)
+    btn_frame.columnconfigure(0, weight=1)
+
+    install_btn = tk.Button(btn_frame, text='Install selected', state=tk.DISABLED)
+    install_btn.grid(row=0, column=1, padx=(0, 4))
+    refresh_btn = tk.Button(btn_frame, text='Refresh list')
+    refresh_btn.grid(row=0, column=2, padx=(0, 4))
+    tk.Button(btn_frame, text='Close', command=dialog.destroy).grid(row=0, column=3)
+
+    state = {
+        'installable': [],
+        'installed_set': set(),
+        'latest_set': set(),
+        'latest_series_for_version': {},
+    }
+
+    def repopulate():
+        tree.delete(*tree.get_children())
+        installable = state['installable']
+        installed_set = state['installed_set']
+        latest_set = state['latest_set']
+        latest_series = state['latest_series_for_version']
+
+        major_filter = major_var.get()
+        search = search_var.get().strip().lower()
+
+        shown = 0
+        for v in installable:
+            if major_filter != 'All' and not v.startswith(major_filter + '.'):
+                continue
+            if search and search not in v.lower():
+                continue
+            tags = []
+            statuses = []
+            if v in installed_set:
+                tags.append('installed')
+                statuses.append('installed')
+            if v in latest_set:
+                tags.append('latest')
+                statuses.append(f'latest {latest_series[v]}')
+            tree.insert('', tk.END, values=(v, ', '.join(statuses)), tags=tuple(tags))
+            shown += 1
+
+        status_var.set(
+            f'{shown} version{"s" if shown != 1 else ""} shown'
+            ' — bold = latest stable, green = installed'
+        )
+
+    def update_install_button(*_):
+        sel = tree.selection()
+        if not sel:
+            install_btn.config(state=tk.DISABLED)
+            return
+        v = tree.set(sel[0], 'version')
+        install_btn.config(state=tk.DISABLED if v in state['installed_set'] else tk.NORMAL)
+
+    def install_selected():
+        sel = tree.selection()
+        if not sel:
+            return
+        v = tree.set(sel[0], 'version')
+        if v in state['installed_set']:
+            return
+        if not messagebox.askyesno(
+            'Install Python',
+            f'Install Python {v}?\n\n'
+            f'This downloads and installs from the official mirror and may take '
+            f'a few minutes.',
+            parent=dialog,
+        ):
+            return
+        dialog.destroy()
+        app.run_pyenv_subcommand('install', v)
+
+    install_btn.config(command=install_selected)
+
+    def apply_loaded(installable):
+        state['installable'] = installable
+        series_list = pyenv_mod.extract_series(installable)
+        major_combo.config(values=['All'] + series_list)
+        latest_set = set()
+        latest_series_for_version = {}
+        for s in series_list:
+            latest = pyenv_mod.latest_in_series(installable, s)
+            if latest:
+                latest_set.add(latest)
+                latest_series_for_version[latest] = s
+        state['latest_set'] = latest_set
+        state['latest_series_for_version'] = latest_series_for_version
+        # Keep the main window's runner combobox + install-latest buttons in
+        # sync — query_versions already updated app.versions_cache, but the
+        # widgets that read from it need an explicit nudge.
+        app._apply_versions_to_arg('installable', installable)
+        app._rebuild_install_latest_buttons()
+        repopulate()
+
+    def load_data(force_refresh=False):
+        state['installed_set'] = set(app.versions_cache.get('installed') or [])
+        cached = app.versions_cache.get('installable')
+        if cached and not force_refresh:
+            apply_loaded(cached)
+            return
+        status_var.set('Loading installable versions…')
+        tree.delete(*tree.get_children())
+        app.query_versions('installable', apply_loaded)
+
+    refresh_btn.config(command=lambda: load_data(force_refresh=True))
+
+    major_combo.bind('<<ComboboxSelected>>', lambda _e: repopulate())
+    search_var.trace_add('write', lambda *_: repopulate())
+    tree.bind('<<TreeviewSelect>>', update_install_button)
+    tree.bind('<Double-1>', lambda _e: install_selected() if tree.selection() else None)
+
+    load_data()
+    search_entry.focus_set()
+
+
 def open_manage_dialog(app):
     """Show a Treeview of installed Python versions with right-click actions."""
     pyenv_root = pyenv_mod.get_pyenv_root()
