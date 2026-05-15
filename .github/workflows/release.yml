@@ -1,0 +1,45 @@
+# Builds the .exe and creates a GitHub Release whenever a v* tag is pushed.
+# Trigger it locally with: git tag v2.1.0 && git push origin v2.1.0
+name: Build and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # required to create the Release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyinstaller pytest
+
+      - name: Run tests
+        run: pytest -v
+
+      - name: Build .exe
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --onefile `
+            --noconsole `
+            --name "pyenv-win-GUI-${{ github.ref_name }}" `
+            --add-data "pyenv_gui/install-pyenv-win.ps1;pyenv_gui" `
+            "pyenv-win-GUI.py"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/pyenv-win-GUI-${{ github.ref_name }}.exe
+          generate_release_notes: true
