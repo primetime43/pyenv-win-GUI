@@ -1,10 +1,13 @@
 """pyenv-win adapters, version parsing, path detection, settings. No Tk imports."""
 
+from __future__ import annotations
+
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from .shell import strip_ansi
 
@@ -12,13 +15,13 @@ from .shell import strip_ansi
 # Bundled official installer script. Vendored verbatim from
 # https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1
 # Refresh by re-downloading to pyenv_gui/install-pyenv-win.ps1.
-INSTALL_SCRIPT_NAME = 'install-pyenv-win.ps1'
+INSTALL_SCRIPT_NAME: str = 'install-pyenv-win.ps1'
 
 
 # Friendly metadata for each pyenv subcommand. Key is the literal subcommand.
 #   arg     : None | 'version' | 'command'
 #   source  : where the version dropdown is populated from (only for arg='version')
-COMMANDS = {
+COMMANDS: dict[str, dict[str, Any]] = {
     'install':      dict(label='Install Python version',           help='Download and install a Python version.',                                  arg='version', source='installable'),
     'uninstall':    dict(label='Uninstall Python version',         help='Remove an installed Python version.',                                     arg='version', source='installed'),
     'versions':     dict(label='List installed versions',          help='Show all Python versions installed via pyenv-win.',                       arg=None),
@@ -37,7 +40,7 @@ COMMANDS = {
     'commands':     dict(label='List pyenv subcommands',           help='Show every available pyenv subcommand.',                                  arg=None),
 }
 
-COMMAND_ORDER = [
+COMMAND_ORDER: list[str] = [
     'install', 'uninstall', 'versions', 'version',
     'global', 'local', 'shell',
     'rehash', 'update', 'duplicate',
@@ -45,23 +48,23 @@ COMMAND_ORDER = [
     'vname', 'version-name', 'commands',
 ]
 
-QUICK_ACTIONS = [
+QUICK_ACTIONS: list[tuple[str, str]] = [
     ('Installed Versions', 'versions'),
     ('Current Version',    'version'),
     ('Rehash Shims',       'rehash'),
     ('Update Mirrors',     'update'),
 ]
 
-LABEL_TO_KEY = {meta['label']: key for key, meta in COMMANDS.items()}
+LABEL_TO_KEY: dict[str, str] = {meta['label']: key for key, meta in COMMANDS.items()}
 
 
 # Strict final-release pattern: X.Y.Z all numeric, no pre-release suffix.
-_FINAL_VER_RE = re.compile(r'^\d+\.\d+\.\d+$')
+_FINAL_VER_RE: re.Pattern[str] = re.compile(r'^\d+\.\d+\.\d+$')
 
 
-def sort_versions_desc(versions):
+def sort_versions_desc(versions: list[str]) -> list[str]:
     """Newest-first. Finals (3.12.0) beat their pre-releases (3.12.0rc1) at equal parts."""
-    def key(v):
+    def key(v: str) -> tuple[tuple[int, ...], int, str]:
         if _FINAL_VER_RE.match(v):
             return (tuple(int(p) for p in v.split('.')), 1, '')
         nums = re.findall(r'\d+', v)
@@ -72,8 +75,8 @@ def sort_versions_desc(versions):
     return sorted(versions, key=key, reverse=True)
 
 
-def parse_versions(text):
-    out = []
+def parse_versions(text: str) -> list[str]:
+    out: list[str] = []
     for line in strip_ansi(text).splitlines():
         line = line.strip()
         if not line or line.startswith(':'):
@@ -86,9 +89,9 @@ def parse_versions(text):
     return sort_versions_desc(out)
 
 
-def extract_series(versions):
+def extract_series(versions: list[str]) -> list[str]:
     """Unique major.minor series, sorted newest-first (e.g. ['3.13', '3.12', ...])."""
-    series = set()
+    series: set[str] = set()
     for v in versions:
         parts = v.split('.')
         if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
@@ -98,10 +101,10 @@ def extract_series(versions):
                   reverse=True)
 
 
-def latest_in_series(versions, series):
+def latest_in_series(versions: list[str], series: str) -> str | None:
     """Highest final-release patch in a major.minor series, or None."""
     prefix = series + '.'
-    matching = []
+    matching: list[tuple[tuple[int, ...], str]] = []
     for v in versions:
         if v.startswith(prefix) and _FINAL_VER_RE.match(v):
             matching.append((tuple(int(p) for p in v.split('.')), v))
@@ -109,7 +112,7 @@ def latest_in_series(versions, series):
     return matching[-1][1] if matching else None
 
 
-def format_size(n):
+def format_size(n: int) -> str:
     if n < 1024:
         return f'{n} B'
     if n < 1024 ** 2:
@@ -119,7 +122,7 @@ def format_size(n):
     return f'{n / 1024 ** 3:.2f} GB'
 
 
-def dir_size(path):
+def dir_size(path: str) -> int:
     """Walk a directory tree and sum file sizes. Ignores I/O errors."""
     total = 0
     try:
@@ -134,7 +137,7 @@ def dir_size(path):
     return total
 
 
-def pyenv_installed():
+def pyenv_installed() -> bool:
     try:
         subprocess.check_output(
             ['powershell', '-NoProfile', '-Command', 'pyenv --version'],
@@ -146,7 +149,7 @@ def pyenv_installed():
         return False
 
 
-def persistent_path():
+def persistent_path() -> str:
     """Read the user's effective persistent PATH (Machine + User) from the registry.
 
     We can't trust ``os.environ['PATH']`` because it was captured at GUI launch
@@ -170,8 +173,8 @@ def persistent_path():
     return os.environ.get('PATH', '')
 
 
-def check_pyenv_path():
-    """Returns (ok: bool, message: str). Looks for pyenv-win\\shims in PATH."""
+def check_pyenv_path() -> tuple[bool, str]:
+    """Returns (ok, message). Looks for pyenv-win\\shims in PATH."""
     path = persistent_path()
     entries = [p.strip().lower() for p in path.split(';') if p.strip()]
     has_bin = any(r'pyenv-win\bin' in p for p in entries)
@@ -183,13 +186,13 @@ def check_pyenv_path():
     return True, ''
 
 
-def get_pyenv_root():
+def get_pyenv_root() -> str | None:
     """Locate the pyenv-win install dir (the one containing 'versions/').
 
     Order: $env:PYENV (process env) → persistent USER env → default fallback.
     Returns None if no valid directory is found.
     """
-    candidates = []
+    candidates: list[str] = []
     p = os.environ.get('PYENV')
     if p:
         candidates.append(p)
@@ -214,13 +217,13 @@ def get_pyenv_root():
 
 
 # Settings sidecar — persists window geometry + last command across launches.
-SETTINGS_PATH = (
+SETTINGS_PATH: Path = (
     Path(os.environ.get('APPDATA') or os.path.expanduser('~'))
     / 'pyenv-win-GUI' / 'settings.json'
 )
 
 
-def load_settings():
+def load_settings() -> dict[str, Any]:
     try:
         with SETTINGS_PATH.open('r', encoding='utf-8') as f:
             data = json.load(f)
@@ -229,7 +232,7 @@ def load_settings():
         return {}
 
 
-def save_settings(data):
+def save_settings(data: dict[str, Any]) -> None:
     """Best-effort save; never raises out of the close handler."""
     try:
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -241,7 +244,7 @@ def save_settings(data):
 
 # PowerShell payload for the Fix PATH button. Prepends bin+shims to USER PATH
 # (user scope = no admin required). Deduplicates if either is already present.
-FIX_PATH_PS = r'''
+FIX_PATH_PS: str = r'''
 $pyenv = $env:PYENV
 if (-not $pyenv) { $pyenv = Join-Path $env:USERPROFILE '.pyenv\pyenv-win\' }
 $pyenv = $pyenv.TrimEnd('\','/')

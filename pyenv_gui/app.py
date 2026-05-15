@@ -26,8 +26,10 @@ from .tooltip import Tooltip
 
 
 # pyenv-win marks output phases with bracketed tags like "::  [Downloading] ::".
+# (Percent-based progress was considered but pyenv-win's install path uses
+# Invoke-WebRequest -UseBasicParsing, which never emits percents to stdout, so
+# the progress bar stays indeterminate throughout.)
 _PHASE_RE = re.compile(r'::\s*\[([^]]+)\]')
-_PCT_RE = re.compile(r'(\d{1,3})\s*%')
 
 
 class App:
@@ -396,24 +398,15 @@ class App:
             pass
 
     def _detect_progress(self, line):
+        """Update the progress phase label from `:: [Phase] ::` markers."""
         m = _PHASE_RE.search(line)
-        if m:
-            phase = m.group(1).strip()
-            # [Info] is the high-frequency housekeeping tag; ignore so the
-            # label doesn't flicker. Keep the rest verbatim.
-            if phase.lower() != 'info':
-                self.root.after(0, self.progress_phase_var.set, phase + '…')
-        m = _PCT_RE.search(line)
-        if m:
-            pct = int(m.group(1))
-            if 0 <= pct <= 100:
-                self.root.after(0, self._set_progress_determinate, pct)
-
-    def _set_progress_determinate(self, pct):
-        if str(self.progress_bar['mode']) != 'determinate':
-            self.progress_bar.stop()
-            self.progress_bar.config(mode='determinate', maximum=100)
-        self.progress_bar['value'] = pct
+        if not m:
+            return
+        phase = m.group(1).strip()
+        # [Info] is the high-frequency housekeeping tag; ignore so the label
+        # doesn't flicker. Keep the rest verbatim.
+        if phase.lower() != 'info':
+            self.root.after(0, self.progress_phase_var.set, phase + '…')
 
     def _set_busy(self, busy):
         state = tk.DISABLED if busy else tk.NORMAL
@@ -426,7 +419,6 @@ class App:
         if busy:
             self.progress_phase_var.set('')
             self.progress_frame.grid()
-            self.progress_bar.config(mode='indeterminate', value=0)
             self.progress_bar.start(15)
         else:
             self.progress_bar.stop()
