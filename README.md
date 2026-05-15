@@ -3,8 +3,9 @@ This project introduces a user-friendly Python GUI for [pyenv-win](https://githu
 
 ## **Command for creating an exe out of the python file**
 ```
-pyinstaller --onefile --noconsole "fileName.py"
+pyinstaller --onefile --noconsole --add-data "pyenv_gui/install-pyenv-win.ps1;pyenv_gui" "pyenv-win-GUI.py"
 ```
+The `--add-data` flag bundles the vendored pyenv-win installer script into the exe so the Install / Uninstall pyenv-win buttons keep working in the standalone build.
 
 ![image](https://github.com/primetime43/pyenv-win-GUI/assets/12754111/c6a77800-b388-4861-b891-7489a4300745)
 

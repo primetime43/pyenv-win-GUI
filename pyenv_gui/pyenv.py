@@ -9,11 +9,10 @@ from pathlib import Path
 from .shell import strip_ansi
 
 
-INSTALL_SCRIPT_URL = (
-    'https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/'
-    'pyenv-win/install-pyenv-win.ps1'
-)
-INSTALL_SCRIPT_PATH = './install-pyenv-win.ps1'
+# Bundled official installer script. Vendored verbatim from
+# https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1
+# Refresh by re-downloading to pyenv_gui/install-pyenv-win.ps1.
+INSTALL_SCRIPT_NAME = 'install-pyenv-win.ps1'
 
 
 # Friendly metadata for each pyenv subcommand. Key is the literal subcommand.

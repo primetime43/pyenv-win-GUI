@@ -16,6 +16,7 @@ import re
 import subprocess
 import threading
 import tkinter as tk
+from importlib.resources import as_file, files
 from tkinter import messagebox, ttk
 
 from . import dialogs
@@ -496,26 +497,17 @@ class App:
 
     # ----- pyenv-win install/uninstall --------------------------------
 
-    def _ensure_install_script(self):
-        if os.path.exists(pyenv_mod.INSTALL_SCRIPT_PATH):
-            return True
-        self.root.after(0, self.append_output, 'Downloading installer script…\n')
-        ps = (
-            f'Invoke-WebRequest -UseBasicParsing -Uri "{pyenv_mod.INSTALL_SCRIPT_URL}" '
-            f'-OutFile "{pyenv_mod.INSTALL_SCRIPT_PATH}"'
-        )
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', ps],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            encoding='utf-8', errors='replace',
-        )
-        if result.returncode != 0:
-            self.root.after(0, self.append_output, 'Failed to download installer script.\n')
-            if result.stdout:
-                self.root.after(0, self.append_output, result.stdout)
-            return False
-        return True
+    def _run_bundled_installer(self, uninstall=False):
+        """Run the vendored install-pyenv-win.ps1, extracted from the package.
+
+        `as_file` returns a real on-disk path even when running from a
+        PyInstaller --onefile build (where package resources are extracted to
+        a temp dir at runtime). The context manager cleans up on exit.
+        """
+        suffix = ' -Uninstall' if uninstall else ''
+        with as_file(files('pyenv_gui').joinpath(pyenv_mod.INSTALL_SCRIPT_NAME)) as ps1:
+            proc = run_powershell(f'& "{ps1}"{suffix}')
+            self._stream_to_output(proc)
 
     def _install_update(self):
         def task():
@@ -524,11 +516,8 @@ class App:
                     0, self.append_output,
                     'pyenv-win is already installed; running installer will update it.\n',
                 )
-            if not self._ensure_install_script():
-                return
             self.root.after(0, self.append_output, 'Starting installation…\n')
-            proc = run_powershell(f'& "{pyenv_mod.INSTALL_SCRIPT_PATH}"')
-            self._stream_to_output(proc)
+            self._run_bundled_installer(uninstall=False)
         self._with_busy(task)
 
     def _uninstall_pyenv(self):
@@ -539,11 +528,8 @@ class App:
                     'pyenv-win is not installed, nothing to uninstall.\n',
                 )
                 return
-            if not self._ensure_install_script():
-                return
             self.root.after(0, self.append_output, 'Starting uninstallation…\n')
-            proc = run_powershell(f'& "{pyenv_mod.INSTALL_SCRIPT_PATH}" -Uninstall')
-            self._stream_to_output(proc)
+            self._run_bundled_installer(uninstall=True)
         self._with_busy(task)
 
     def _open_pyenv_root(self):
