@@ -22,6 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import dialogs
 from . import pyenv as pyenv_mod
 from .shell import first_version_line, run_powershell, strip_ansi
+from .tooltip import Tooltip
 
 
 # pyenv-win marks output phases with bracketed tags like "::  [Downloading] ::".
@@ -33,6 +34,8 @@ class App:
     def __init__(self):
         self.is_busy = False
         self.versions_cache = {'installed': None, 'installable': None}
+        # Tracks the active subprocess so the Stop button can taskkill it.
+        self._current_process = None
         self._build_ui()
         self._apply_settings()
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
@@ -86,6 +89,8 @@ class App:
         self.refresh_status_button = tk.Button(status_top, text='↻ Refresh',
                                                command=self.refresh_status)
         self.refresh_status_button.grid(row=0, column=1, sticky='e')
+        Tooltip(self.refresh_status_button,
+                'Re-query the active version, scope panel, and PATH check.')
 
         scopes_frame = tk.Frame(status_frame)
         scopes_frame.grid(row=1, column=0, sticky='ew', padx=8, pady=(0, 4))
@@ -112,6 +117,9 @@ class App:
         self.fix_path_button = tk.Button(self.path_row, text='Fix PATH',
                                          command=self._fix_path)
         self.fix_path_button.grid(row=0, column=1, sticky='e', padx=(8, 0))
+        Tooltip(self.fix_path_button,
+                'Prepend pyenv-win\\bin and pyenv-win\\shims to your USER PATH\n'
+                "so 'python' resolves to your pyenv-managed version.")
 
         # pyenv-win itself
         pyenv_frame = ttk.LabelFrame(self.root, text='pyenv-win')
@@ -120,12 +128,18 @@ class App:
         self.install_button = tk.Button(pyenv_frame, text='Install / Update pyenv-win',
                                         command=self._install_update)
         self.install_button.pack(side=tk.LEFT, padx=6, pady=6)
+        Tooltip(self.install_button,
+                "Install pyenv-win, or update it if already installed.")
         self.uninstall_button = tk.Button(pyenv_frame, text='Uninstall pyenv-win',
                                           command=self._uninstall_pyenv)
         self.uninstall_button.pack(side=tk.LEFT, padx=(0, 6), pady=6)
+        Tooltip(self.uninstall_button,
+                "Remove pyenv-win from your system (including its env vars).")
         self.open_root_button = tk.Button(pyenv_frame, text='Open pyenv root',
                                           command=self._open_pyenv_root)
         self.open_root_button.pack(side=tk.LEFT, padx=(0, 6), pady=6)
+        Tooltip(self.open_root_button,
+                'Open the pyenv-win install directory in Explorer.')
 
         # Quick actions
         quick_frame = ttk.LabelFrame(self.root, text='Quick actions')
@@ -136,11 +150,16 @@ class App:
             btn = tk.Button(quick_frame, text=text,
                             command=lambda k=key: self.run_pyenv_subcommand(k))
             btn.pack(side=tk.LEFT, padx=6, pady=6)
+            # Reuse the help string already living in COMMANDS metadata.
+            Tooltip(btn, pyenv_mod.COMMANDS[key]['help'])
             self.quick_buttons.append(btn)
 
         manage_button = tk.Button(quick_frame, text='Manage installed…',
                                   command=lambda: dialogs.open_manage_dialog(self))
         manage_button.pack(side=tk.LEFT, padx=6, pady=6)
+        Tooltip(manage_button,
+                'Manage installed Python versions: set global, uninstall,\n'
+                'create venv, manage pip packages, open folder.')
         self.quick_buttons.append(manage_button)
 
         # Install Python (latest stable per series + Browse dialog)
@@ -154,6 +173,9 @@ class App:
             command=lambda: dialogs.open_browse_dialog(self),
         )
         self.browse_button.pack(side=tk.RIGHT, padx=6, pady=6)
+        Tooltip(self.browse_button,
+                'Browse and search every installable Python version,\n'
+                'with filters and an already-installed marker.')
 
         self.install_latest_label = ttk.Label(
             self.install_python_frame, text='Loading installable versions…',
@@ -195,10 +217,14 @@ class App:
                                         command=self._refresh_versions)
         self.refresh_button.grid(row=2, column=2, sticky='e', padx=(0, 8), pady=(0, 8))
         self.refresh_button.grid_remove()
+        Tooltip(self.refresh_button,
+                'Force re-fetch the version list from pyenv.')
 
         self.run_button = tk.Button(runner_frame, text='Run',
                                     command=self._run_command, width=12)
         self.run_button.grid(row=3, column=0, columnspan=3, pady=(0, 8))
+        Tooltip(self.run_button,
+                'Run the selected pyenv subcommand with the argument above.')
 
         # Output
         output_frame = ttk.LabelFrame(self.root, text='Output')
@@ -226,6 +252,15 @@ class App:
         self.progress_phase_var = tk.StringVar(value='')
         ttk.Label(self.progress_frame, textvariable=self.progress_phase_var,
                   foreground='#555').grid(row=0, column=1, sticky='w', padx=(8, 0))
+
+        # Stop button is only relevant while busy; lives in the progress frame
+        # so it auto-hides via grid_remove() in _set_busy(False). Intentionally
+        # NOT in the busy-button disable list — Stop only matters when busy.
+        self.stop_button = tk.Button(self.progress_frame, text='Stop',
+                                      command=self._stop_current)
+        self.stop_button.grid(row=0, column=2, sticky='e', padx=(8, 0))
+        Tooltip(self.stop_button,
+                'Force-terminate the running operation and its child processes.')
 
         # Footer
         footer = tk.Frame(self.root)
@@ -329,12 +364,36 @@ class App:
             messagebox.showerror('Save output', str(e))
 
     def _stream_to_output(self, process):
-        for line in iter(process.stdout.readline, ''):
-            clean = strip_ansi(line)
-            self.root.after(0, self.append_output, clean)
-            self._detect_progress(clean)
-        process.stdout.close()
-        return process.wait()
+        self._current_process = process
+        try:
+            for line in iter(process.stdout.readline, ''):
+                clean = strip_ansi(line)
+                self.root.after(0, self.append_output, clean)
+                self._detect_progress(clean)
+            process.stdout.close()
+            return process.wait()
+        finally:
+            self._current_process = None
+
+    def _stop_current(self):
+        """Terminate the running subprocess tree.
+
+        PowerShell on Windows spawns child processes for downloads/extraction;
+        `taskkill /T /F` kills the whole tree so an in-progress install
+        actually stops instead of orphaning its workers.
+        """
+        proc = self._current_process
+        if proc is None:
+            return
+        self.append_output('\n^C (stopping…)\n')
+        try:
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False, capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     def _detect_progress(self, line):
         m = _PHASE_RE.search(line)
