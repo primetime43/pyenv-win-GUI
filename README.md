@@ -2,6 +2,10 @@
 
 A friendly Tkinter GUI for [pyenv-win](https://github.com/pyenv-win/pyenv-win) — install, switch, and manage Python versions on Windows without memorizing pyenv commands.
 
+## Background
+
+[pyenv-win](https://github.com/pyenv-win/pyenv-win) is the Windows port of [pyenv](https://github.com/pyenv/pyenv) — it lets you install and switch between multiple Python versions on the same machine. It's powerful but command-line only: every operation means remembering `pyenv install 3.12.7`, `pyenv global 3.11.5`, `pyenv local 3.10.11`, `pyenv versions`, and so on. This project puts a GUI on top: install a new Python version, switch the active one, create venvs, manage pip packages per version, and see at a glance what's active and where it was set — all without typing pyenv commands.
+
 ## Features
 
 - **Install / update / uninstall pyenv-win itself.** Uses the vendored official installer script — no network roundtrip on launch.
@@ -11,57 +15,17 @@ A friendly Tkinter GUI for [pyenv-win](https://github.com/pyenv-win/pyenv-win) �
 - **Live status panel** with the active Python version banner and `global` / `local` / `shell` scopes side by side. Detects when pyenv-win's shims aren't on PATH and offers a one-click **Fix PATH** that prepends `bin` and `shims` to your USER PATH.
 - **Friendly command dropdown** wrapping every pyenv subcommand with a description and version-aware argument autocompletion.
 - **ANSI-clean output pane** with right-click *Copy / Copy all / Save to file… / Clear*.
+- **Progress bar with phase label and Stop button** during long-running operations. Stop force-terminates the whole subprocess tree, not just the parent shell.
+- **Hover tooltips** on every button explaining what they do.
 - **Persistent settings** — window size and last selected command are saved to `%APPDATA%\pyenv-win-GUI\settings.json`.
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.9+ (standard library only — no third-party deps)
-- PowerShell (ships with Windows)
 
-## Running
 
-```
-python pyenv-win-GUI.py
-```
+## Download
 
-Or as a module:
-
-```
-python -m pyenv_gui
-```
-
-## Building a standalone .exe
-
-```
-pyinstaller --onefile --noconsole --add-data "pyenv_gui/install-pyenv-win.ps1;pyenv_gui" "pyenv-win-GUI.py"
-```
-
-The `--add-data` flag bundles the vendored pyenv-win installer script into the exe so the Install / Uninstall pyenv-win buttons keep working in the standalone build.
-
-## Project layout
-
-```
-pyenv-win-GUI.py        Thin entry shim
-pyenv_gui/
-├── __init__.py         main() factory
-├── shell.py            PowerShell runner, ANSI stripping, version-line walker (no Tk)
-├── pyenv.py            Command metadata, version parsing, path detection, settings (no Tk)
-├── dialogs.py          Manage / Browse / Venv / Pip dialogs
-├── app.py              class App: main window + status panel + busy state
-└── install-pyenv-win.ps1   Vendored from pyenv-win upstream
-```
-
-`shell.py` and `pyenv.py` import zero Tk and are covered by `tests/`.
-
-## Running tests
-
-```
-pip install pytest
-pytest
-```
-
-Tests cover the pure helpers (version parsing/sorting, series extraction, size formatting, ANSI stripping, …). No GUI runtime needed.
+Grab the latest standalone `.exe` from the [Releases page](https://github.com/primetime43/pyenv-win-GUI/releases) — no Python install required.
 
 ## Screenshots
 
