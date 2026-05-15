@@ -17,7 +17,7 @@ import subprocess
 import threading
 import tkinter as tk
 from importlib.resources import as_file, files
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from . import dialogs
 from . import pyenv as pyenv_mod
@@ -212,6 +212,7 @@ class App:
         out_scroll = tk.Scrollbar(output_frame, command=self.output_text.yview)
         out_scroll.grid(row=0, column=1, sticky='ns', padx=(0, 6), pady=6)
         self.output_text['yscrollcommand'] = out_scroll.set
+        self._install_output_context_menu()
 
         # Progress (hidden when idle)
         self.progress_frame = tk.Frame(self.root)
@@ -262,6 +263,70 @@ class App:
     def append_output(self, text):
         self.output_text.insert(tk.END, text)
         self.output_text.see(tk.END)
+
+    def _install_output_context_menu(self):
+        """Right-click menu on the Output Text widget: Copy / Copy all / Save / Clear."""
+        menu = tk.Menu(self.output_text, tearoff=0)
+        menu.add_command(label='Copy', command=self._copy_output_selection)
+        menu.add_command(label='Copy all', command=self._copy_output_all)
+        menu.add_separator()
+        menu.add_command(label='Save to file…', command=self._save_output_to_file)
+        menu.add_separator()
+        menu.add_command(label='Clear',
+                         command=lambda: self.output_text.delete('1.0', tk.END))
+
+        def show(event):
+            # Enable Copy only when there's a selection; Copy all / Save / Clear
+            # only when the widget has content.
+            try:
+                self.output_text.selection_get()
+                menu.entryconfig('Copy', state=tk.NORMAL)
+            except tk.TclError:
+                menu.entryconfig('Copy', state=tk.DISABLED)
+            has_content = bool(self.output_text.get('1.0', 'end-1c'))
+            for label in ('Copy all', 'Save to file…', 'Clear'):
+                menu.entryconfig(label, state=tk.NORMAL if has_content else tk.DISABLED)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        self.output_text.bind('<Button-3>', show)
+
+    def _copy_output_selection(self):
+        try:
+            text = self.output_text.selection_get()
+        except tk.TclError:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def _copy_output_all(self):
+        text = self.output_text.get('1.0', 'end-1c')
+        if not text:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+
+    def _save_output_to_file(self):
+        text = self.output_text.get('1.0', 'end-1c')
+        if not text:
+            return
+        path = filedialog.asksaveasfilename(
+            title='Save output to file',
+            defaultextension='.log',
+            filetypes=[('Log files', '*.log'),
+                       ('Text files', '*.txt'),
+                       ('All files', '*.*')],
+            parent=self.root,
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(text)
+        except OSError as e:
+            messagebox.showerror('Save output', str(e))
 
     def _stream_to_output(self, process):
         for line in iter(process.stdout.readline, ''):
