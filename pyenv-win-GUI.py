@@ -1,6 +1,6 @@
 # Author: primetime43
 # GitHub: https://github.com/primetime43
-__version__ = '1.4.0'
+__version__ = '2.0.0'
 
 import os
 import re
