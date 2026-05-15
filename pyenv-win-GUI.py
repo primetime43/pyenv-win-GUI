@@ -9,7 +9,7 @@ import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 # pyenv-win colorizes some output with ANSI SGR codes. Tk has no idea what
 # those are and renders them as garbage. Strip them everywhere we surface
@@ -201,21 +201,48 @@ def _set_busy(busy):
         progress_frame.grid_remove()
 
 
+# Re-entry guard. With dialogs in the mix (manage / pip), it's easy to fire
+# a second pyenv/pip op while the first is still running; this drops the
+# second silently so we never run two pyenv processes in parallel.
+_is_busy = False
+
+
 def _with_busy(task):
+    global _is_busy
+    if _is_busy:
+        return
+    _is_busy = True
     _set_busy(True)
 
     def worker():
+        global _is_busy
         try:
             task()
         except Exception as e:
             root.after(0, _append_output, f'Error: {e}\n')
         finally:
+            _is_busy = False
             root.after(0, _set_busy, False)
             # State may have changed (install/uninstall/global/local/shell);
             # refresh the status panel after every command.
             root.after(0, _refresh_status)
 
     threading.Thread(target=worker, daemon=True).start()
+
+
+def _run_external(label, command_str, on_complete=None):
+    """Run an arbitrary PowerShell command, streaming to the Output pane.
+
+    Used for venv / pip operations that aren't `pyenv <subcommand>`.
+    `on_complete` (if given) runs on the main thread after the process exits.
+    """
+    def task():
+        root.after(0, _append_output, f'> {label}\n')
+        proc = _run_powershell(command_str)
+        _stream_to_output(proc)
+        if on_complete:
+            root.after(0, on_complete)
+    _with_busy(task)
 
 
 # --- status (active version + scope panel + PATH check) ----------------
@@ -453,6 +480,212 @@ def _fix_path():
     _with_busy(task)
 
 
+def _query_pip_list(exe, on_done):
+    """Run `<exe> -m pip list --format=json` in a thread; on_done(list|None)."""
+    cmd = f'& "{exe}" -m pip list --format=json'
+
+    def task():
+        try:
+            proc = _run_powershell(cmd, stream=False)
+            out, _ = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            root.after(0, on_done, None)
+            return
+        except FileNotFoundError:
+            root.after(0, on_done, None)
+            return
+        if proc.returncode != 0:
+            root.after(0, on_done, None)
+            return
+        try:
+            data = json.loads(_strip_ansi(out))
+        except json.JSONDecodeError:
+            root.after(0, on_done, None)
+            return
+        root.after(0, on_done, data if isinstance(data, list) else None)
+
+    threading.Thread(target=task, daemon=True).start()
+
+
+def _open_venv_dialog(version, exe):
+    """Modal-ish dialog: pick a folder, run `<exe> -m venv <folder>`."""
+    dialog = tk.Toplevel(root)
+    dialog.title(f'Create venv — Python {version}')
+    dialog.geometry('580x190')
+    dialog.transient(root)
+    dialog.columnconfigure(1, weight=1)
+
+    ttk.Label(dialog, text='Python:').grid(row=0, column=0, sticky='w', padx=10, pady=(10, 4))
+    ttk.Label(dialog, text=exe, foreground='#555').grid(
+        row=0, column=1, columnspan=2, sticky='w', pady=(10, 4), padx=(0, 10))
+
+    ttk.Label(dialog, text='Target folder:').grid(row=1, column=0, sticky='w', padx=10, pady=4)
+    target_var = tk.StringVar(value=os.path.join(os.getcwd(), '.venv'))
+    target_entry = ttk.Entry(dialog, textvariable=target_var)
+    target_entry.grid(row=1, column=1, sticky='ew', padx=4, pady=4)
+
+    def browse():
+        d = filedialog.askdirectory(title='Choose folder for venv', parent=dialog)
+        if d:
+            target_var.set(d)
+
+    tk.Button(dialog, text='Browse…', command=browse).grid(row=1, column=2, padx=(0, 10), pady=4)
+
+    ttk.Label(dialog,
+              text='The venv will be created at this exact path (e.g., ...\\myproj\\.venv).',
+              foreground='#888').grid(row=2, column=1, columnspan=2,
+                                      sticky='w', padx=4, pady=(0, 8))
+
+    def create():
+        target = target_var.get().strip().strip('"')
+        if not target:
+            messagebox.showerror('Create venv', 'Choose a target folder.', parent=dialog)
+            return
+        if os.path.isdir(target) and os.listdir(target):
+            if not messagebox.askyesno(
+                'Folder not empty',
+                f'{target}\n\nalready exists and is not empty. Create venv anyway?',
+                parent=dialog,
+            ):
+                return
+        dialog.destroy()
+
+        activate_ps1 = os.path.join(target, 'Scripts', 'Activate.ps1')
+
+        def hint():
+            _append_output(
+                f'\nVenv ready at:\n  {target}\n'
+                f'To activate in PowerShell:\n  & "{activate_ps1}"\n'
+            )
+        _run_external(
+            f'python -m venv "{target}"',
+            f'& "{exe}" -m venv "{target}"',
+            on_complete=hint,
+        )
+
+    btn_frame = tk.Frame(dialog)
+    btn_frame.grid(row=3, column=0, columnspan=3, sticky='ew', padx=10, pady=10)
+    btn_frame.columnconfigure(0, weight=1)
+    tk.Button(btn_frame, text='Create venv', command=create).grid(row=0, column=1, padx=(0, 4))
+    tk.Button(btn_frame, text='Cancel', command=dialog.destroy).grid(row=0, column=2)
+
+    target_entry.focus_set()
+    target_entry.icursor(tk.END)
+
+
+def _open_pip_dialog(version, exe):
+    """Per-version pip panel: list, install, freeze, uninstall."""
+    dialog = tk.Toplevel(root)
+    dialog.title(f'pip — Python {version}')
+    dialog.geometry('620x520')
+    dialog.minsize(500, 360)
+    dialog.transient(root)
+    dialog.columnconfigure(0, weight=1)
+    dialog.rowconfigure(2, weight=1)
+
+    install_frame = tk.Frame(dialog)
+    install_frame.grid(row=0, column=0, sticky='ew', padx=10, pady=(10, 4))
+    install_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(install_frame, text='Install package:').grid(row=0, column=0, sticky='w', padx=(0, 6))
+    pkg_var = tk.StringVar()
+    pkg_entry = ttk.Entry(install_frame, textvariable=pkg_var)
+    pkg_entry.grid(row=0, column=1, sticky='ew')
+    install_btn = tk.Button(install_frame, text='Install')
+    install_btn.grid(row=0, column=2, padx=(6, 0))
+
+    status_var_pip = tk.StringVar(value='Loading packages…')
+    ttk.Label(dialog, textvariable=status_var_pip,
+              foreground='#555').grid(row=1, column=0, sticky='w', padx=10)
+
+    tree_frame = tk.Frame(dialog)
+    tree_frame.grid(row=2, column=0, sticky='nsew', padx=10, pady=4)
+    tree_frame.rowconfigure(0, weight=1)
+    tree_frame.columnconfigure(0, weight=1)
+
+    tree = ttk.Treeview(tree_frame, columns=('package', 'version'),
+                        show='headings', selectmode='browse')
+    tree.heading('package', text='Package')
+    tree.heading('version', text='Version')
+    tree.column('package', width=320, anchor='w')
+    tree.column('version', width=140, anchor='w')
+    tree.grid(row=0, column=0, sticky='nsew')
+
+    scroll = tk.Scrollbar(tree_frame, command=tree.yview)
+    scroll.grid(row=0, column=1, sticky='ns')
+    tree['yscrollcommand'] = scroll.set
+
+    btn_frame = tk.Frame(dialog)
+    btn_frame.grid(row=3, column=0, sticky='ew', padx=10, pady=10)
+    btn_frame.columnconfigure(0, weight=1)
+
+    def load_packages():
+        status_var_pip.set('Loading packages…')
+        tree.delete(*tree.get_children())
+
+        def on_done(packages):
+            if packages is None:
+                status_var_pip.set(
+                    'Failed to load packages — pip may not be installed for this version.'
+                )
+                return
+            for p in packages:
+                tree.insert('', tk.END,
+                            values=(p.get('name', ''), p.get('version', '')))
+            n = len(packages)
+            status_var_pip.set(f'{n} package{"s" if n != 1 else ""}')
+
+        _query_pip_list(exe, on_done)
+
+    def do_install():
+        pkg = pkg_var.get().strip()
+        if not pkg or _is_busy:
+            return
+        pkg_var.set('')
+        _run_external(
+            f'pip install {pkg}',
+            f'& "{exe}" -m pip install {pkg}',
+            on_complete=load_packages,
+        )
+
+    install_btn.config(command=do_install)
+    pkg_entry.bind('<Return>', lambda _e: do_install())
+
+    def do_freeze():
+        if _is_busy:
+            return
+        _run_external('pip freeze', f'& "{exe}" -m pip freeze')
+
+    def do_uninstall():
+        if _is_busy:
+            return
+        sel = tree.selection()
+        if not sel:
+            return
+        pkg = tree.set(sel[0], 'package')
+        if not pkg:
+            return
+        if not messagebox.askyesno(
+            'Uninstall package',
+            f'Uninstall {pkg} from Python {version}?',
+            parent=dialog,
+        ):
+            return
+        _run_external(
+            f'pip uninstall -y {pkg}',
+            f'& "{exe}" -m pip uninstall -y {pkg}',
+            on_complete=load_packages,
+        )
+
+    tk.Button(btn_frame, text='Refresh', command=load_packages).grid(row=0, column=1, padx=(0, 4))
+    tk.Button(btn_frame, text='pip freeze → output', command=do_freeze).grid(row=0, column=2, padx=(0, 4))
+    tk.Button(btn_frame, text='Uninstall selected…', command=do_uninstall).grid(row=0, column=3, padx=(0, 4))
+    tk.Button(btn_frame, text='Close', command=dialog.destroy).grid(row=0, column=4)
+
+    load_packages()
+
+
 def _open_manage_dialog():
     """Show a Treeview of installed Python versions with right-click actions."""
     pyenv_root = _get_pyenv_root()
@@ -561,8 +794,24 @@ def _open_manage_dialog():
         dialog.destroy()
         _run_pyenv_subcommand('uninstall', v)
 
+    def create_venv():
+        v = _selected_version()
+        if not v:
+            return
+        _open_venv_dialog(v, os.path.join(versions_dir, v, 'python.exe'))
+
+    def manage_pip():
+        v = _selected_version()
+        if not v:
+            return
+        _open_pip_dialog(v, os.path.join(versions_dir, v, 'python.exe'))
+
     context_menu = tk.Menu(dialog, tearoff=0)
     context_menu.add_command(label='Set as Global', command=set_global)
+    context_menu.add_separator()
+    context_menu.add_command(label='Create venv…', command=create_venv)
+    context_menu.add_command(label='Manage packages (pip)…', command=manage_pip)
+    context_menu.add_separator()
     context_menu.add_command(label='Uninstall…', command=uninstall_version)
     context_menu.add_separator()
     context_menu.add_command(label='Open Folder', command=open_folder)
