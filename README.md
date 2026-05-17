@@ -15,10 +15,6 @@ A friendly Tkinter GUI for [pyenv-win](https://github.com/pyenv-win/pyenv-win) �
 - **Hover tooltips** on every button explaining what they do.
 - **Persistent settings** — window size and last selected command are saved to `%APPDATA%\pyenv-win-GUI\settings.json`.
 
-## Requirements
-
-
-
 ## Download
 
 Grab the latest standalone `.exe` from the [Releases page](https://github.com/primetime43/pyenv-win-GUI/releases) — no Python install required.
