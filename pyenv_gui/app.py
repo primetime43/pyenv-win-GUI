@@ -68,6 +68,7 @@ class App:
     # ----- UI construction --------------------------------------------
 
     def _build_ui(self):
+        import sys
         from . import __version__
 
         self.root = tk.Tk()
@@ -75,6 +76,12 @@ class App:
         self.root.geometry('720x720')
         self.root.minsize(560, 540)
         self.root.columnconfigure(0, weight=1)
+
+        icon_img = "./resources/main.ico"
+        icon_source = sys.executable if getattr(sys, "frozen", False) else icon_img
+
+        # Set icon for the main window and all dialogs
+        self.root.iconbitmap(default=icon_source)
 
         # Status frame
         status_frame = ttk.LabelFrame(self.root, text='Status')
