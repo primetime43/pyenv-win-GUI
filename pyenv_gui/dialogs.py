@@ -15,6 +15,20 @@ from tkinter import filedialog, messagebox, ttk
 from . import pyenv as pyenv_mod
 from .shell import run_powershell, strip_ansi
 
+def center_window(window):
+    """
+    Center the given Tkinter window on the screen
+    """
+    window.update_idletasks()  # Ensure geometry info is updated
+    win_width = window.winfo_width()
+    win_height = window.winfo_height()
+
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+
+    x = (screen_width - win_width) // 2
+    y = (screen_height - win_height) // 2
+    window.geometry(f"{win_width}x{win_height}+{x}+{y}")
 
 def _query_pip_list(app, exe, on_done):
     """Run `<exe> -m pip list --format=json` in a thread; on_done(list|None) on main thread."""
@@ -61,6 +75,8 @@ def open_venv_dialog(app, version, exe):
     target_entry = ttk.Entry(dialog, textvariable=target_var)
     target_entry.grid(row=1, column=1, sticky='ew', padx=4, pady=4)
 
+    center_window(dialog)
+    
     def browse():
         d = filedialog.askdirectory(title='Choose folder for venv', parent=dialog)
         if d:
@@ -155,6 +171,8 @@ def open_pip_dialog(app, version, exe):
     btn_frame = tk.Frame(dialog)
     btn_frame.grid(row=3, column=0, sticky='ew', padx=10, pady=10)
     btn_frame.columnconfigure(0, weight=1)
+
+    center_window(dialog)
 
     def load_packages():
         status_var_pip.set('Loading packages…')
@@ -290,6 +308,8 @@ def open_browse_dialog(app):
         'latest_set': set(),
         'latest_series_for_version': {},
     }
+
+    center_window(dialog)
 
     def repopulate():
         tree.delete(*tree.get_children())
@@ -450,6 +470,7 @@ def open_manage_dialog(app):
     button_frame.columnconfigure(0, weight=1)
     ttk.Label(button_frame, text='Right-click a row for actions.',
               foreground='#666').grid(row=0, column=0, sticky='w')
+    center_window(dialog)
 
     def selected_version():
         sel = tree.selection()

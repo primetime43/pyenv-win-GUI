@@ -276,6 +276,8 @@ class App:
                   command=lambda: self.output_text.delete('1.0', tk.END)).grid(
             row=0, column=1, sticky='e')
 
+        dialogs.center_window(self.root)
+
     def _apply_settings(self):
         settings = pyenv_mod.load_settings()
         geom = settings.get('geometry')
