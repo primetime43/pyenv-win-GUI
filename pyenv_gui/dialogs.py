@@ -15,6 +15,37 @@ from tkinter import filedialog, messagebox, ttk
 from . import pyenv as pyenv_mod
 from .shell import run_powershell, strip_ansi
 
+def center_window(window, parent=None):
+    """Center ``window`` over its parent if given, else on the screen.
+
+    Call this *after* all widgets are built so the size is final. Centering over
+    a mapped parent keeps dialogs on top of the app and clear of an edge-docked
+    taskbar (a plain screen-center can still land under a wide vertical taskbar);
+    we fall back to screen-centering when there's no usable parent. The result is
+    clamped so the window stays fully on-screen.
+    """
+    window.update_idletasks()  # Ensure geometry info is updated.
+    win_width = window.winfo_width()
+    win_height = window.winfo_height()
+    # An unmapped Toplevel reports 1x1 until the WM draws it; fall back to the
+    # size the widget tree (or an explicit geometry()) asked for.
+    if win_width <= 1 or win_height <= 1:
+        win_width = window.winfo_reqwidth()
+        win_height = window.winfo_reqheight()
+
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+
+    if parent is not None and parent.winfo_ismapped():
+        x = parent.winfo_rootx() + (parent.winfo_width() - win_width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - win_height) // 2
+    else:
+        x = (screen_width - win_width) // 2
+        y = (screen_height - win_height) // 2
+
+    x = max(0, min(x, screen_width - win_width))
+    y = max(0, min(y, screen_height - win_height))
+    window.geometry(f"{win_width}x{win_height}+{x}+{y}")
 
 def _query_pip_list(app, exe, on_done):
     """Run `<exe> -m pip list --format=json` in a thread; on_done(list|None) on main thread."""
@@ -108,6 +139,8 @@ def open_venv_dialog(app, version, exe):
 
     target_entry.focus_set()
     target_entry.icursor(tk.END)
+
+    center_window(dialog, app.root)
 
 
 def open_pip_dialog(app, version, exe):
@@ -219,6 +252,7 @@ def open_pip_dialog(app, version, exe):
     tk.Button(btn_frame, text='Uninstall selected…', command=do_uninstall).grid(row=0, column=3, padx=(0, 4))
     tk.Button(btn_frame, text='Close', command=dialog.destroy).grid(row=0, column=4)
 
+    center_window(dialog, app.root)
     load_packages()
 
 
@@ -390,6 +424,8 @@ def open_browse_dialog(app):
 
     load_data()
     search_entry.focus_set()
+
+    center_window(dialog, app.root)
 
 
 def open_manage_dialog(app):
@@ -588,4 +624,5 @@ def open_manage_dialog(app):
     tk.Button(button_frame, text='Refresh', command=load).grid(row=0, column=1, padx=(0, 4))
     tk.Button(button_frame, text='Close', command=dialog.destroy).grid(row=0, column=2)
 
+    center_window(dialog, app.root)
     load()

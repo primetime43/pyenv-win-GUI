@@ -301,11 +301,16 @@ class App:
     def _apply_settings(self):
         settings = pyenv_mod.load_settings()
         geom = settings.get('geometry')
+        applied = False
         if isinstance(geom, str):
             try:
                 self.root.geometry(geom)
+                applied = True
             except tk.TclError:
                 pass
+        # No (or invalid) saved position — center on screen for first launch.
+        if not applied:
+            dialogs.center_window(self.root)
         last_cmd = settings.get('last_command')
         if isinstance(last_cmd, str) and last_cmd in self.command_labels:
             self.command_var.set(last_cmd)
