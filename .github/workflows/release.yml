@@ -35,7 +35,9 @@ jobs:
             --onefile `
             --noconsole `
             --name "pyenv-win-GUI-${{ github.ref_name }}" `
+            --icon "pyenv_gui/main.ico" `
             --add-data "pyenv_gui/install-pyenv-win.ps1;pyenv_gui" `
+            --add-data "pyenv_gui/main.ico;pyenv_gui" `
             "pyenv-win-GUI.py"
 
       - name: Create release
