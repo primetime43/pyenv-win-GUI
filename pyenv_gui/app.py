@@ -67,6 +67,26 @@ class App:
 
     # ----- UI construction --------------------------------------------
 
+    def _set_window_icon(self):
+        """Set the window icon for the root and all Toplevels (default=).
+
+        When frozen by PyInstaller (built with --icon) the icon is embedded in
+        the exe, so sys.executable is the bitmap source. From source we resolve
+        the bundled .ico via importlib.resources — robust regardless of the
+        current working directory. Failures are swallowed: a missing or invalid
+        icon must never block UI construction.
+        """
+        import sys
+        try:
+            if getattr(sys, 'frozen', False):
+                self.root.iconbitmap(default=sys.executable)
+            else:
+                ref = files('pyenv_gui').joinpath(pyenv_mod.ICON_NAME)
+                with as_file(ref) as ico:
+                    self.root.iconbitmap(default=str(ico))
+        except Exception:
+            pass
+
     def _build_ui(self):
         from . import __version__
 
@@ -75,6 +95,8 @@ class App:
         self.root.geometry('720x720')
         self.root.minsize(560, 540)
         self.root.columnconfigure(0, weight=1)
+
+        self._set_window_icon()
 
         # Status frame
         status_frame = ttk.LabelFrame(self.root, text='Status')

@@ -17,6 +17,9 @@ from .shell import strip_ansi
 # Refresh by re-downloading to pyenv_gui/install-pyenv-win.ps1.
 INSTALL_SCRIPT_NAME: str = 'install-pyenv-win.ps1'
 
+# Bundled window icon, accessed via importlib.resources (see App._set_window_icon).
+ICON_NAME: str = 'main.ico'
+
 
 # Friendly metadata for each pyenv subcommand. Key is the literal subcommand.
 #   arg     : None | 'version' | 'command'
