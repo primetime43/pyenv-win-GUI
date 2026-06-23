@@ -556,9 +556,9 @@ class App:
 
             rc_a, out_a = results['active']
             if rc_a != 0 and not out_a.strip():
-                active = '(pyenv-win not detected)'
+                active = '(no activated pyenv-win version detected)'
             else:
-                active = first_version_line(out_a) or '(unknown)'
+                active = first_version_line(out_a) or '(no Python version detected)'
             self.root.after(0, self.active_var.set, f'Active: {active}')
 
             rc, out = results['global']
@@ -574,7 +574,7 @@ class App:
                             f'Shell: {self._format_scope_value(out, rc)}')
 
             ok, msg = pyenv_mod.check_pyenv_path()
-            if rc_a != 0:
+            if not ok and rc_a != 0:
                 self.root.after(
                     0, self._show_path_warning,
                     'pyenv-win is not installed or not on PATH. '
